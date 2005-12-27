@@ -1,2 +1,15 @@
+0.02	27 December 2005
+	Added support for raw perl data dump of data structures: as_raw_data().
+	
+	Added get_elem() and set_elem() for access to nested elements and to elements who share names of object methods.
+	
+	Modified autoloader to return a raw perl data dump of node (instead of simple scalar dump.
+	
+	Added support of SOAP data or XML serialization of any arbitrary node (includes children) within the ComplexType object.
+	
+	Corrected bug in element attribute parsing.
+	
+	Minor bug fix in SOAP::Data::ComplexType::Builder::Element method value().
+
 0.01	26 October 2005
 	First public version of ComplexType.pm.

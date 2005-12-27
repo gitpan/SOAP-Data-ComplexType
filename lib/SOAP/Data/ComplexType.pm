@@ -3,7 +3,7 @@ use strict;
 use warnings;
 use Carp ();
 
-our $VERSION = 0.01;
+our $VERSION = 0.02;
 
 use constant OBJ_URI 	=> undef;
 use constant OBJ_TYPE	=> undef;	#format: ns:type
@@ -57,38 +57,42 @@ sub _parse_obj_fields {	#recursive method
 
 	### generate data structures ###
 	foreach my $key (keys %{$data}) {
-		my $key_regex = $key;
+		my $key_regex = quotemeta $key;
 		if (grep(/^$key_regex$/, keys %{$obj_fields})) {
-			unless (defined $self->{$key}) {
-				if (ref($obj_fields->{$key}->[0]) eq 'ARRAY') {	#recursion case: complex subtype up to N levels deep
-					my $ref = $obj_fields->{$key}->[0];
-					my $obj = $self->{_sdb_obj}->add_elem(
-						name		=> $key,
-						value		=> undef,
-						type		=> $ref->[0],
-						uri			=> $obj_fields->{$key}->[1],
-						attributes	=> $obj_fields->{$key}->[2],
-						parent		=> defined $parent_hierarchy ? $self->{_sdb_obj}->get_elem($parent_hierarchy) : undef
-					);
+			my ($type, $uri, $attributes) = @{$obj_fields->{$key}};
+#			my ($type, $required, $uri, $attributes) = @{$obj_fields->{$key}};
+#			if ($required) {
+#				Carp::cluck "Warning: Required field '$key' is null" && next unless ref($data->{$key}) eq 'HASH' && scalar keys %{$data->{$key}};
+#			}
+			if (ref($type) eq 'ARRAY') {	#recursion case: complex subtype up to N levels deep
+				my ($c_type, $c_fields) = @{$type};
+				my $obj = $self->{_sdb_obj}->add_elem(
+					name		=> $key,
+					value		=> undef,
+					type		=> $c_type,
+					uri			=> $uri,
+					attributes	=> $attributes,
+					parent		=> defined $parent_hierarchy ? $self->{_sdb_obj}->get_elem($parent_hierarchy) : undef
+				);
 #warn "Added element $key\n";
-					if (ref($data->{$key}) eq 'HASH') { $self->_parse_obj_fields($data->{$key}, $ref->[1], $obj->fullname()); }
-					else { Carp::cluck "Warning: Expected hash ref value for key '$key', found scalar. Ignoring data value '$data->{$key}'" if defined $data->{$key}; }
-				}
-				else {	#base case
-					$self->{_sdb_obj}->add_elem(
-						name		=> $key,
-						value		=> $data->{$key},
-						type		=> $obj_fields->{$key}->[0],
-						uri			=> $obj_fields->{$key}->[1],
-						attributes	=> $obj_fields->{$key}->[2],
-						parent		=> defined $parent_hierarchy ? $self->{_sdb_obj}->get_elem($parent_hierarchy) : undef
-					);
-#warn "Added element $key=$data->{$key}\n";
-				}
+				if (ref($data->{$key}) eq 'HASH') { $self->_parse_obj_fields($data->{$key}, $c_fields, $obj->fullname()); }
+				else { Carp::cluck "Warning: Expected hash ref value for key '$key', found scalar. Ignoring data value '$data->{$key}'" if defined $data->{$key}; }
 			}
-			else { Carp::cluck "Warning: Ignoring duplicate data key name '$key'"; }
+			else {	#base case
+#				if ($required) {
+#					Carp::cluck "Warning: Required field '$key' is null" && next unless defined $data->{$key};
+#				}
+				$self->{_sdb_obj}->add_elem(
+					name		=> $key,
+					value		=> $data->{$key},
+					type		=> $type,
+					uri			=> $uri,
+					attributes	=> $attributes,
+					parent		=> defined $parent_hierarchy ? $self->{_sdb_obj}->get_elem($parent_hierarchy) : undef
+				);
+#warn "Added element $key=$data->{$key}\n";
+			}
 		}
-#		else { Carp::cluck "Warning: Ignoring invalid data key name '$key'"; }
 	}
 	return $ret_href;
 }
@@ -98,17 +102,48 @@ sub CLONE {}
 
 sub AUTOLOAD {
 	my $self = shift;
-	my $class = ref($self) || $self;
+	my $class = ref($self) || Carp::confess "'$self' is not an object";
 	my $name = $AUTOLOAD;
 	my $value = shift;
 	$name =~ s/.*://o;   # strip fully-qualified portion
 	my $elem;
-	Carp::confess "Can't access '$name' element object in class $class" unless $elem = $self->{_sdb_obj}->get_elem($name);
-	return @{$elem->value($value)}[0];	#set value if param passed
+	Carp::confess "Can't access '$name' element object in class $class" unless defined ($elem = $self->{_sdb_obj}->get_elem($name));
+	return defined $value ? @{$elem->value($value)}[0] : $self->as_raw_data($name);	#set value if param passed
 }
 
-sub as_soap_data { return shift->{_sdb_obj}->to_soap_data(); }
-sub as_xml_data { return shift->{_sdb_obj}->serialise(); }
+sub get_elem { shift->set_elem($_[0]); }
+
+sub set_elem {
+	my $self = shift;
+	my $class = ref($self) || Carp::confess "'$self' is not an object";
+	my $name = shift;
+	my $value = shift;
+	my $elem;
+	Carp::cluck "Can't access '$name' element object in class $class" && return undef unless defind ($elem = $self->{_sdb_obj}->get_elem($name));
+	return @{$elem->value($value)}[0];
+}
+
+sub as_soap_data {
+	my $self = shift;
+	return @_ ? $self->{_sdb_obj}->get_elem($_[0])->get_as_data : $self->{_sdb_obj}->to_soap_data;
+}
+
+sub as_xml_data {
+	return shift->{_sdb_obj}->serialise(@_);
+}
+
+sub as_raw_data {
+	my $self = shift;
+	my $data;
+	if (@_) {
+		$data = $self->{_sdb_obj}->get_elem($_[0])->get_as_raw;
+		$data = $data->{(keys %{$data})[0]} if ref($data) eq 'HASH' && scalar keys %{$data} == 1;	#remove parent key in this case
+	}
+	else {
+		$data = $self->{_sdb_obj}->to_raw_data;
+	}
+	return $data;
+}
 
 package SOAP::Data::ComplexType::Builder;
 #adds type, uri field to Builder object
@@ -158,16 +193,57 @@ sub get_as_data {
 			@data = @values;
 		}
 		if ($elem->{header}) {
-			$data[0] = SOAP::Header->name($elem->{name} => $data[0])->attr($elem->attributes())->type($elem->{type} ? $elem->{type} : undef)->uri($elem->{uri} ? $elem->{uri} : undef);
+			$data[0] = SOAP::Header->name($elem->{name} => $data[0])->attr($elem->attributes())->type($elem->{type})->uri($elem->{uri});
 		} else {
 		if ($elem->{isMethod}) {
-			@data = ( SOAP::Data->name($elem->{name})->attr($elem->attributes())->type($elem->{type} ? $elem->{type} : undef)->uri($elem->{uri} ? $elem->{uri} : undef) 
-				=> SOAP::Data->value(@values)->type($elem->{type} ? $elem->{type} : undef)->uri($elem->{uri} ? $elem->{uri} : undef) );
+			@data = ( SOAP::Data->name($elem->{name})->attr($elem->attributes())->type($elem->{type})->uri($elem->{uri}) 
+				=> SOAP::Data->value(@values)->type($elem->{type})->uri($elem->{uri}) );
 		} else {
-			$data[0] = SOAP::Data->name($elem->{name} => $data[0])->attr($elem->attributes())->type($elem->{type} ? $elem->{type} : undef)->uri($elem->{uri} ? $elem->{uri} : undef);
+			$data[0] = SOAP::Data->name($elem->{name} => $data[0])->attr($elem->attributes())->type($elem->{type})->uri($elem->{uri});
 		}
 	}
 	return @data;
+}
+
+sub to_raw_data {
+	my $self = shift;
+	my @data = ();
+	foreach my $elem ( $self->elems ) {
+		push(@data,%{$self->get_as_raw($elem,1)});
+	}
+	return {@data};
+}
+
+sub get_as_raw {
+	my ($self,$elem) = @_;
+	my @values;
+	foreach my $value ( @{$elem->value} ) {
+		if (ref $value) {	#ref => object
+			push(@values,$self->get_as_raw($value))
+		} else {
+			push(@values,$value);
+		}
+	}
+	push @values, undef unless @values;	#insure undef value has the value undef
+	my %data = ();
+
+	foreach my $value (@values) {
+		if (ref $value) {	#ref => HASH
+			$data{$elem->name}->{$_} = $value->{$_} foreach keys %{$value};
+		} else {
+			$data{$elem->name} = $value;	#node can only have scalar value if value is a scalar
+			last;
+		}
+	}
+	return \%data;
+}
+
+sub serialise {
+	my $self = shift;
+	my $data = @_
+		? SOAP::Data->value( $self->get_elem($_[0])->get_as_data )
+		: SOAP::Data->name('SOAP:ENV' => \SOAP::Data->value( $self->to_soap_data ) );
+	my $serialized = SOAP::Serializer->autotype($self->autotype)->readable($self->readable)->serialize( $data );
 }
 
 package SOAP::Data::ComplexType::Builder::Element;
@@ -228,7 +304,7 @@ sub name {
 sub value {
 	my $self = shift;
 	my $value = shift;
-	if ($value) {
+	if (defined $value) {
 		if (ref $value) {
 			$self->{VALUE} = $value;
 		} else {
@@ -260,17 +336,42 @@ sub get_as_data {
 	}
 
 	if ($self->{header}) {
-		$data[0] = SOAP::Header->name($self->{name} => $data[0])->attr($self->{attributes})->type($self->{type} ? $self->{type} : undef)->uri($self->{uri} ? $self->{uri} : undef);
+		$data[0] = SOAP::Header->name($self->{name} => $data[0])->attr($self->attributes())->type($self->{type})->uri($self->{uri});
 	} else {
 		if ($self->{isMethod}) {
-			@data = ( SOAP::Data->name($self->{name})->attr($self->{attributes})->type($self->{type} ? $self->{type} : undef)->uri($self->{uri} ? $self->{uri} : undef) 
-				=> SOAP::Data->value(@values)->type($self->{type} ? $self->{type} : undef)->uri($self->{uri} ? $self->{uri} : undef) );
+			@data = ( SOAP::Data->name($self->{name})->attr($self->attributes())->type($self->{type})->uri($self->{uri}) 
+				=> SOAP::Data->value(@values)->type($self->{type})->uri($self->{uri}) );
 		} else {
-			$data[0] = SOAP::Data->name($self->{name} => $data[0])->attr($self->{attributes})->type($self->{type} ? $self->{type} : undef)->uri($self->{uri} ? $self->{uri} : undef);
+			$data[0] = SOAP::Data->name($self->{name} => $data[0])->attr($self->attributes())->type($self->{type})->uri($self->{uri});
 		}
 	}
 
 	return @data;
+}
+
+sub get_as_raw {
+	my $self = shift;
+	my @values;
+	foreach my $value ( @{$self->{VALUE}} ) {
+		if (ref $value) {	#ref => object
+			push(@values,$value->get_as_raw())
+		} else {
+			push(@values,$value);
+		}
+	}
+	push @values, undef unless @values;	#insure undef value has the value undef
+	my %data = ();
+
+	foreach my $value (@values) {
+		if (ref $value) {	#ref => HASH
+			$data{$self->{name}}->{$_} = $value->{$_} foreach keys %{$value};
+		} else {
+			$data{$self->{name}} = $value;	#node can only have scalar value if value is a scalar
+			last;
+		}
+	}
+
+	return \%data;
 }
 
 1;
@@ -394,7 +495,57 @@ implement inheritance.
 
 =head2 Creating a SOAP ComplexType class
 
-	TODO (see SYNOPSYS for example, for now)
+	Every class must define the following compile-time constants:
+		OBJ_URI:   URI specific to this complex type
+		OBJ_TYPE:  namespace and type of the complexType (formatted like 'myNamespace1:myDataType')
+		OBJ_FIELDS: hashref containing name => arrayref pairs; see L<ComplexType field definitions>
+		
+	When creating your constructor, if you plan to support inheritance, you must perform the following action:
+	
+		my $obj_fields = $_[1];	#second param from untouched @_
+		$obj_fields = defined $obj_fields && ref($obj_fields) eq 'HASH' ? {%{$obj_fields}, %{+OBJ_FIELDS}} : OBJ_FIELDS;
+		my $self = $class->SUPER::new($data, $obj_fields);
+		
+	which insures that you support child class fields and pass a combination of them and your fields to
+	the base constructor.  Otherwise, you can simply do the following:
+	
+		my $self = $class->SUPER::new($data, OBJ_FIELDS);
+		
+	(Author's Note: I don't like this kludgy constructor design, and will likely change it in a future release)
+
+=head2 ComplexType field definitions
+
+	When defining a ComplexType field's arrayref properties, there are 4 values you must specify within an arrayref:
+		type: (simple) SOAP primitive datatype, OR (complex) arrayref with [type, fields] referencing another ComplexType
+		uri:  specific to this field
+		attr: hashref containing any other SOAP::Data attributes
+		
+	So, for example, given a complexType 'Foo' with 
+		object uri='http://foo.bar.baz', 
+		object type='ns1:myFoo'
+	
+	and two fields (both using simple SOAP type formats)
+		field1: type=string, uri=undef, attr=undef
+		field2: type=int, uri=undef, attr=undef
+		
+	we would define our class exactly as seen in the L<SYNOPSYS> for
+	package My::SOAP::Data::ComplexType::Foo.
+	
+	
+	The second form of the type field may be an arrayref with the following elements:
+		type
+		fields hashref
+		
+	So, for example, given a complexType 'Bar' with
+		object uri='http://bar.baz.uri', 
+		object type='ns1:myBar'
+	
+	and two fields (one using simple SOAP type, the other using complexType 'myFoo')
+		field1: type=string, uri=undef, attr=undef
+		field2: type=myFoo, uri=undef, attr=undef
+
+	we would define our class exactly as seen in the L<SYNOPSYS> for
+	package My::SOAP::Data::ComplexType::Bar.
 
 =head2 Class Methods
 
@@ -419,8 +570,8 @@ implement inheritance.
 
 =head1 TODO
 
-Changing the value of a field should also be able to support SOAP::Data::ComplexType
-objects.  Currently, only scalar values can be used.
+Changing the value of a field should also be able to support complex data structures, correctly
+imported into the complex type definition. Currently, only simple scalar values are supported.
 
 Support for more properties of a SOAP::Data object.  Currently only type, uri, attributes,
 and value are supported.
@@ -432,7 +583,7 @@ Apache Axis or Microsoft .NET.
 
 Add a test suite.
 
-Complete this documentation :-)
+Improve on this documentation.
 
 =head1 CAVIATS
 
