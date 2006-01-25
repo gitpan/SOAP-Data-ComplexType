@@ -3,7 +3,7 @@ use strict;
 use warnings;
 use Carp ();
 
-our $VERSION = 0.02;
+our $VERSION = 0.03;
 
 use constant OBJ_URI 	=> undef;
 use constant OBJ_TYPE	=> undef;	#format: ns:type
@@ -17,36 +17,40 @@ sub new {
 	my $obj_fields = shift;	#href: name=>[(scalar)type, (href)attr]; or name=>[[(scalar)type, href], (href)attr]; or name=>[[(scalar)type, [(scalar)type, href]], (href)attr]; ...
 	my $self = { _sdb_obj => SOAP::Data::ComplexType::Builder->new(readable=>1) };
 	bless($self, $class);
-	$data = $self->_convert_object_to_hashref($data) if (ref($data) eq (split(/::/, $class))[-1]);	#kludge: to support SOAP::Lite's virtually non-existant support of complex datatypes
-	$self->_parse_obj_fields($data, $obj_fields, undef);
+	my $data_in = $self->_convert_object_to_raw($data);
+	$self->_parse_obj_fields($data_in, $obj_fields, undef);
 	return $self;
 }
 
-sub _convert_object_to_hashref {	#recursive method
+sub _convert_object_to_raw {	#recursive method: convert any object elements into perl primitives
 	my $self = shift;
 	my $obj = shift;
-	my $ret_href = {};
-	return undef unless ref($obj);
-	foreach my $key (keys %{$obj}) {
-		if (ref($obj->{$key})) {	#recursion
-			$ret_href->{$key} = $self->_convert_object_to_hashref($obj->{$key});
-		}
-		else {	#base case
-			$ret_href->{$key} = $obj->{$key};
-		}
+
+	my $ret;
+	if (UNIVERSAL::isa($obj, 'HASH')) {
+		$ret->{$_} = ref($obj->{$_}) ? $self->_convert_object_to_raw($obj->{$_}) : $obj->{$_} foreach (keys %{$obj});
 	}
-	return $ret_href;
+	elsif (UNIVERSAL::isa($obj, 'ARRAY')) {
+		push @{$ret}, ref($_) ? $self->_convert_object_to_raw($_) : $_ foreach (@{$obj});
+	}
+	elsif (UNIVERSAL::isa($obj, 'SCALAR')) {	#future: do we *really* want to deref scalarref?
+		$ret = ref(${$obj}) ? $self->_convert_object_to_raw(${$obj}) : ${$obj};
+	}
+	else {	#base case
+		$ret = $obj;
+	}
+	return $ret;
 }
 
 sub _parse_obj_fields {	#recursive method
 	my $self = shift;
 	my $data = shift;
 	my $obj_fields = shift;
-	my $parent_hierarchy = shift;	#format: SOAP::Data::ComplexType::Builder->fullname()
+	my $parent_obj = shift;
 
 	### validate parameters ###
 	my $ret_href;
-	unless (ref($data) eq 'HASH') {
+	unless (ref($data) && UNIVERSAL::isa($data, 'HASH')) {
 		Carp::confess "Input data not expected ref type: HASH";
 		return undef;
 	}
@@ -56,41 +60,46 @@ sub _parse_obj_fields {	#recursive method
 	}
 
 	### generate data structures ###
-	foreach my $key (keys %{$data}) {
+	foreach my $key (keys %{$obj_fields}) {
 		my $key_regex = quotemeta $key;
-		if (grep(/^$key_regex$/, keys %{$obj_fields})) {
+		if (grep(/^$key_regex$/, keys %{$data})) {
 			my ($type, $uri, $attributes) = @{$obj_fields->{$key}};
+			my $value = $data->{$key};
 #			my ($type, $required, $uri, $attributes) = @{$obj_fields->{$key}};
 #			if ($required) {
-#				Carp::cluck "Warning: Required field '$key' is null" && next unless ref($data->{$key}) eq 'HASH' && scalar keys %{$data->{$key}};
+#				Carp::cluck "Warning: Required field '$key' is null" && next unless (ref($value) eq 'HASH' && scalar keys %{$value}) || (ref($value) eq 'ARRAY' && @{$value});
 #			}
 			if (ref($type) eq 'ARRAY') {	#recursion case: complex subtype up to N levels deep
 				my ($c_type, $c_fields) = @{$type};
-				my $obj = $self->{_sdb_obj}->add_elem(
-					name		=> $key,
-					value		=> undef,
-					type		=> $c_type,
-					uri			=> $uri,
-					attributes	=> $attributes,
-					parent		=> defined $parent_hierarchy ? $self->{_sdb_obj}->get_elem($parent_hierarchy) : undef
-				);
+				my @values = ref($value) eq 'ARRAY' ? @{$value} : ($value);
+				foreach my $val (@values) {	#future: need support for multidimensional arrays
+					my $obj = $self->{_sdb_obj}->add_elem(
+						name		=> $key,
+						value		=> undef,
+						type		=> $c_type,
+						uri			=> $uri,
+						attributes	=> $attributes,
+						parent		=> $parent_obj
+					);
 #warn "Added element $key\n";
-				if (ref($data->{$key}) eq 'HASH') { $self->_parse_obj_fields($data->{$key}, $c_fields, $obj->fullname()); }
-				else { Carp::cluck "Warning: Expected hash ref value for key '$key', found scalar. Ignoring data value '$data->{$key}'" if defined $data->{$key}; }
+					if (ref($val) eq 'HASH') { $self->_parse_obj_fields($val, $c_fields, $obj); }
+					else { Carp::cluck "Warning: Expected hash or array ref value for key '$key', found scalar. Ignoring data value '$val'" if defined $val; }
+				}
 			}
 			else {	#base case
 #				if ($required) {
-#					Carp::cluck "Warning: Required field '$key' is null" && next unless defined $data->{$key};
+#					Carp::cluck "Warning: Required field '$key' is null" && next unless defined $value;
 #				}
+				my @values = ref($value) eq 'ARRAY' && $type !~ m/:Array$/ ? @{$value} : ($value);	#note: does this correctly support SOAP Arrays?
 				$self->{_sdb_obj}->add_elem(
 					name		=> $key,
-					value		=> $data->{$key},
+					value		=> $_,
 					type		=> $type,
 					uri			=> $uri,
 					attributes	=> $attributes,
-					parent		=> defined $parent_hierarchy ? $self->{_sdb_obj}->get_elem($parent_hierarchy) : undef
-				);
-#warn "Added element $key=$data->{$key}\n";
+					parent		=> $parent_obj
+				) foreach (@values);
+#warn "Added element $key=$value\n";
 			}
 		}
 	}
@@ -119,7 +128,10 @@ sub set_elem {
 	my $name = shift;
 	my $value = shift;
 	my $elem;
-	Carp::cluck "Can't access '$name' element object in class $class" && return undef unless defind ($elem = $self->{_sdb_obj}->get_elem($name));
+	unless (defined ($elem = $self->{_sdb_obj}->get_elem($name))) {
+		Carp::cluck "Can't access '$name' element object in class $class";
+		return undef;
+	}
 	return @{$elem->value($value)}[0];
 }
 
@@ -148,6 +160,8 @@ sub as_raw_data {
 package SOAP::Data::ComplexType::Builder;
 #adds type, uri field to Builder object
 
+use strict;
+use warnings;
 use SOAP::Data::Builder 0.8;
 use vars qw(@ISA);
 @ISA = qw(SOAP::Data::Builder);
@@ -178,7 +192,7 @@ sub get_as_data {
 	my ($self,$elem) = @_;
 	my @values;
 	foreach my $value ( @{$elem->value} ) {
-		next unless ($value);
+		next unless (defined $value);
 		if (ref $value) {
 			push(@values,$self->get_as_data($value))
 		} else {
@@ -249,6 +263,8 @@ sub serialise {
 package SOAP::Data::ComplexType::Builder::Element;
 #supports type and uri; correctly handles '0' data value
 
+use strict;
+use warnings;
 use SOAP::Data::Builder::Element;
 use vars qw(@ISA);
 @ISA = qw(SOAP::Data::Builder::Element);
@@ -495,83 +511,135 @@ implement inheritance.
 
 =head2 Creating a SOAP ComplexType class
 
-	Every class must define the following compile-time constants:
-		OBJ_URI:   URI specific to this complex type
-		OBJ_TYPE:  namespace and type of the complexType (formatted like 'myNamespace1:myDataType')
-		OBJ_FIELDS: hashref containing name => arrayref pairs; see L<ComplexType field definitions>
-		
-	When creating your constructor, if you plan to support inheritance, you must perform the following action:
-	
-		my $obj_fields = $_[1];	#second param from untouched @_
-		$obj_fields = defined $obj_fields && ref($obj_fields) eq 'HASH' ? {%{$obj_fields}, %{+OBJ_FIELDS}} : OBJ_FIELDS;
-		my $self = $class->SUPER::new($data, $obj_fields);
-		
-	which insures that you support child class fields and pass a combination of them and your fields to
-	the base constructor.  Otherwise, you can simply do the following:
-	
-		my $self = $class->SUPER::new($data, OBJ_FIELDS);
-		
-	(Author's Note: I don't like this kludgy constructor design, and will likely change it in a future release)
+Every class must define the following compile-time constants:
+
+	OBJ_URI:   URI specific to this complex type
+	OBJ_TYPE:  namespace and type of the complexType (formatted like 'myNamespace1:myDataType')
+	OBJ_FIELDS: hashref containing name => arrayref pairs; see L<ComplexType field definitions>
+
+When creating your constructor, if you plan to support inheritance, you must perform the following action:
+
+	my $obj_fields = $_[1];	#second param from untouched @_
+	$obj_fields = defined $obj_fields && ref($obj_fields) eq 'HASH' ? {%{$obj_fields}, %{+OBJ_FIELDS}} : OBJ_FIELDS;
+	my $self = $class->SUPER::new($data, $obj_fields);
+
+which insures that you support child class fields and pass a combination of them and your fields to
+the base constructor.  Otherwise, you can simply do the following:
+
+	my $self = $class->SUPER::new($data, OBJ_FIELDS);
+
+(Author's Note: I don't like this kludgy constructor design, and will likely change it in a future release)
+
 
 =head2 ComplexType field definitions
 
-	When defining a ComplexType field's arrayref properties, there are 4 values you must specify within an arrayref:
-		type: (simple) SOAP primitive datatype, OR (complex) arrayref with [type, fields] referencing another ComplexType
-		uri:  specific to this field
-		attr: hashref containing any other SOAP::Data attributes
-		
-	So, for example, given a complexType 'Foo' with 
-		object uri='http://foo.bar.baz', 
-		object type='ns1:myFoo'
+When defining a ComplexType field's arrayref properties, there are 4 values you must specify within an arrayref:
+
+	type: (simple) SOAP primitive datatype, OR (complex) arrayref with [type, fields] referencing another ComplexType
+	uri:  specific to this field
+	attr: hashref containing any other SOAP::Data attributes
+
+So, for example, given a complexType 'Foo' with 
+
+	object uri='http://foo.bar.baz', 
+	object type='ns1:myFoo'
+
+and two fields (both using simple SOAP type formats)
+
+	field1: type=string, uri=undef, attr=undef
+	field2: type=int, uri=undef, attr=undef
+
+we would define our class exactly as seen in the L<SYNOPSYS> for
+package My::SOAP::Data::ComplexType::Foo.
+
+
+The second form of the type field may be an arrayref with the following elements:
+
+	type
+	fields hashref
+
+So, for example, given a complexType 'Bar' with
+
+	object uri='http://bar.baz.uri', 
+	object type='ns1:myBar'
+
+and two fields (one using simple SOAP type, the other using complexType 'myFoo')
+
+	field1: type=string, uri=undef, attr=undef
+	field2: type=myFoo, uri=undef, attr=undef
+
+we would define our class exactly as seen in the L<SYNOPSYS> for
+package My::SOAP::Data::ComplexType::Bar.
+
+=head1 Class Methods
+
+=head2 My::SOAP::Data::ComplexType::Example->new( HASHREF )
+
+Constructor.  Expects HASH ref (or reference to blessed SOAP::SOM->result object).
+
+An example might be:
+
+	{ keya => { subkey1 => val1, subkey2 => val2 }, keyb => { subkey3 => val3 } }
+
+When you have a ComplexType that allows for multiple elements of the same name
+(i.e. xml attribute maxOccurs > 1), use the following example form for simpleType 
+values:
+
+	{ keya => [ val1, val2, val3 ] }
 	
-	and two fields (both using simple SOAP type formats)
-		field1: type=string, uri=undef, attr=undef
-		field2: type=int, uri=undef, attr=undef
-		
-	we would define our class exactly as seen in the L<SYNOPSYS> for
-	package My::SOAP::Data::ComplexType::Foo.
+or, for complexType values:
 	
+	{ keya => [ {key1 => val1}, {key2 => val2}, {key3 => val3} ] }
+
+=head1 Object Methods
+
+=head2 $obj->get_elem( NAME )
+
+Returns the value of the request element.  If the element is not at the top level
+in a hierarchy of ComplexTypes, this method will recursively parse through the
+entire datastructure until the first matching element name is found.
+
+If you wish to get a specific element nested deeply in a ComplexType hierarchy,
+use the following format for the NAME parameter:
+
+	PATH/TO/YOUR/NAME
 	
-	The second form of the type field may be an arrayref with the following elements:
-		type
-		fields hashref
-		
-	So, for example, given a complexType 'Bar' with
-		object uri='http://bar.baz.uri', 
-		object type='ns1:myBar'
+This example would expect to find the element in the following hierarchy:
+
+	<PATH>
+		<TO>
+			<YOUR>
+				<NAME>
+					value
+				</NAME>
+			</YOUR>
+		</TO>
+	</PATH>
 	
-	and two fields (one using simple SOAP type, the other using complexType 'myFoo')
-		field1: type=string, uri=undef, attr=undef
-		field2: type=myFoo, uri=undef, attr=undef
+=head2 $obj->set_elem ( NAME, NEW_VALUE )
 
-	we would define our class exactly as seen in the L<SYNOPSYS> for
-	package My::SOAP::Data::ComplexType::Bar.
+Sets the value of the element NAME to the value NEW_VALUE.  Rules for what may be
+used for valid NAME parameters and how they are used are explained in documentation
+for get_elem object method.
 
-=head2 Class Methods
+=head2 $obj->FIELDNAME( [ NEW_VALUE ] )
 
-	My::SOAP::Data::ComplexType::Example->new( HASH )
+Returns (or sets) the value of the given FIELDNAME field in your object. 
+NEW_VALUE is optional, and changes the current value of the object.
 
-		Constructor.  Expects HASH ref (or reference to blessed SOAP::SOM->result object).
+=head2 $obj->as_soap_data
 
-=head2 Object Methods
+Returns all data as a list of SOAP::Data objects.
 
-	$obj->as_soap_data
+=head2 $obj->as_xml_data
 
-		Returns all data as a list of SOAP::Data objects.
+Returns all data formatted as an XML string.
 
-	$obj->as_xml_data
+=head2 $obj->as_raw_data
 
-		Returns all data formatted as an XML string.
-
-	$obj->FIELDNAME( NEW_VALUE )
-
-		Returns (or sets) the value of the given FIELDNAME field in your object. 
-		NEW_VALUE is optional, and changes the current value of the object.
+Returns all data formatted as a Perl hash.
 
 =head1 TODO
-
-Changing the value of a field should also be able to support complex data structures, correctly
-imported into the complex type definition. Currently, only simple scalar values are supported.
 
 Support for more properties of a SOAP::Data object.  Currently only type, uri, attributes,
 and value are supported.
@@ -586,6 +654,10 @@ Add a test suite.
 Improve on this documentation.
 
 =head1 CAVIATS
+
+Changing the value of a field after it is set should also be able to support complex data 
+structures, correctly imported into the complex type definition. Currently, only simple 
+scalar values are supported.
 
 The OBJ_FIELD data structure may change in future versions to more cleanly support 
 SOAP::Data parameters.  For now, I plan to keep it an array reference and simply append
@@ -603,7 +675,7 @@ Eric Rybski
 
 =head1 COPYRIGHT AND LICENSE
 
-Copyright 2005 by Eric Rybski, All Rights Reserved
+Copyright 2005-2006 by Eric Rybski, All Rights Reserved
 
 This library is free software; you can redistribute it and/or modify
 it under the same terms as Perl itself. 

@@ -1,3 +1,18 @@
+0.03	25 January 2005
+	Fixed minor error case handling syntax bug in set_elem().
+	
+	Fixed bug where if value were 0, SOAP::Data::ComplexType::Builder::get_as_data() would interpret this as undef.
+	
+	Added strict and warnings pragmas to all packages.
+	
+	Rewrote internals to support nested objects for constructor input.
+	
+	Support added for complexTypes with fields that can have more than once occurance (i.e. array-like types).
+	
+	Added documentation for new object methods.
+	
+	Misc documentation updates.
+
 0.02	27 December 2005
 	Added support for raw perl data dump of data structures: as_raw_data().
 	

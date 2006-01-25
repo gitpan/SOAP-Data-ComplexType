@@ -1,5 +1,6 @@
-lib/SOAP/Data/ComplexType.pm
-MANIFEST
-README
 CHANGES
+lib/SOAP/Data/ComplexType.pm
 Makefile.PL
+MANIFEST			This list of files
+META.yml
+README
