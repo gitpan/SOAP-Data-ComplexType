@@ -1,4 +1,14 @@
-0.03	25 January 2005
+0.031	27 February 2006
+	SOAP::Data::ComplexType::AUTLOAD now warns with stack traces instead of dieing on them.
+	Intention is to have run-time stability preferred without requiring exception traps everywhere in implementing applications (for now).
+	
+	Added eva{...} enclosure to SOAP::Data::ComplexType::as_raw_data(...) and SOAP::Data::ComplexType::Builder::serialize(...).
+	
+	Added object type checking in SOAP::Data::ComplexType::Builder get_as_raw(...), get_as_data(...), and add_elem(...).
+	
+	Overloaded SOAP::Data::ComplexType::Builder parent class find_elem(...) to handle better type checking.
+
+0.03	25 January 2006
 	Fixed minor error case handling syntax bug in set_elem().
 	
 	Fixed bug where if value were 0, SOAP::Data::ComplexType::Builder::get_as_data() would interpret this as undef.

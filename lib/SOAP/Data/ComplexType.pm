@@ -3,7 +3,7 @@ use strict;
 use warnings;
 use Carp ();
 
-our $VERSION = 0.03;
+our $VERSION = 0.031;
 
 use constant OBJ_URI 	=> undef;
 use constant OBJ_TYPE	=> undef;	#format: ns:type
@@ -116,7 +116,10 @@ sub AUTOLOAD {
 	my $value = shift;
 	$name =~ s/.*://o;   # strip fully-qualified portion
 	my $elem;
-	Carp::confess "Can't access '$name' element object in class $class" unless defined ($elem = $self->{_sdb_obj}->get_elem($name));
+	unless (defined ($elem = $self->{_sdb_obj}->get_elem($name))) {
+		Carp::cluck "Can't access '$name' element object in class $class";
+		return undef;
+	}
 	return defined $value ? @{$elem->value($value)}[0] : $self->as_raw_data($name);	#set value if param passed
 }
 
@@ -148,7 +151,8 @@ sub as_raw_data {
 	my $self = shift;
 	my $data;
 	if (@_) {
-		$data = $self->{_sdb_obj}->get_elem($_[0])->get_as_raw;
+		$data = eval { $self->{_sdb_obj}->get_elem($_[0])->get_as_raw; };
+		warn $@ if $@;
 		$data = $data->{(keys %{$data})[0]} if ref($data) eq 'HASH' && scalar keys %{$data} == 1;	#remove parent key in this case
 	}
 	else {
@@ -166,6 +170,8 @@ use SOAP::Data::Builder 0.8;
 use vars qw(@ISA);
 @ISA = qw(SOAP::Data::Builder);
 
+use constant BUILDER_ELEMENT => 'SOAP::Data::ComplexType::Builder::Element';
+
 sub new {
 	my $proto = shift;
 	my $class = ref($proto) || $proto;
@@ -176,9 +182,9 @@ sub new {
 sub add_elem {
 	my ($self,%args) = @_;
 	my $elem = SOAP::Data::ComplexType::Builder::Element->new(%args);
-	if ( $args{parent} ) {
+	if ( defined $args{parent} ) {
 		my $parent = $args{parent};
-		unless (ref $parent eq 'SOAP::Data::ComplexType::Builder::Element') {
+		unless (UNIVERSAL::isa($parent, BUILDER_ELEMENT)) {
 			$parent = $self->get_elem($args{parent});
 		}
 		$parent->add_elem($elem);
@@ -188,15 +194,39 @@ sub add_elem {
 	return $elem;
 }
 
+sub find_elem {
+    my ($self,$parent,$key,@keys) = @_;
+    my ($a,$b);
+    if (UNIVERSAL::isa($parent, BUILDER_ELEMENT)) {
+		foreach my $elem ( $parent->get_children()) {
+			next unless ref $elem;
+			if ($elem->{name} eq $key) {
+				$a = $elem;
+				$b = $key;
+				last;
+			}
+		}
+	}
+
+    my $elem = $a;
+    undef($b);
+    while ($b = shift(@keys) ) {
+        $elem = $self->find_elem($elem,$b,@keys);
+    }
+    return $elem;
+}
+
 sub get_as_data {
 	my ($self,$elem) = @_;
 	my @values;
-	foreach my $value ( @{$elem->value} ) {
-		next unless (defined $value);
-		if (ref $value) {
-			push(@values,$self->get_as_data($value))
-		} else {
-			push(@values,$value);
+	if (UNIVERSAL::isa($elem, BUILDER_ELEMENT)) {
+		foreach my $value ( @{$elem->value} ) {
+			next unless (defined $value);
+			if (ref $value) {
+				push(@values,$self->get_as_data($value))
+			} else {
+				push(@values,$value);
+			}
 		}
 	}
 	my @data = ();
@@ -231,11 +261,13 @@ sub to_raw_data {
 sub get_as_raw {
 	my ($self,$elem) = @_;
 	my @values;
-	foreach my $value ( @{$elem->value} ) {
-		if (ref $value) {	#ref => object
-			push(@values,$self->get_as_raw($value))
-		} else {
-			push(@values,$value);
+	if (UNIVERSAL::isa($elem, BUILDER_ELEMENT)) {
+		foreach my $value ( @{$elem->value} ) {
+			if (ref $value) {	#ref => object
+				push(@values,$self->get_as_raw($value))
+			} else {
+				push(@values,$value);
+			}
 		}
 	}
 	push @values, undef unless @values;	#insure undef value has the value undef
@@ -255,8 +287,9 @@ sub get_as_raw {
 sub serialise {
 	my $self = shift;
 	my $data = @_
-		? SOAP::Data->value( $self->get_elem($_[0])->get_as_data )
+		? eval { SOAP::Data->value( $self->get_elem($_[0])->get_as_data ); }
 		: SOAP::Data->name('SOAP:ENV' => \SOAP::Data->value( $self->to_soap_data ) );
+	warn $@ if $@;
 	my $serialized = SOAP::Serializer->autotype($self->autotype)->readable($self->readable)->serialize( $data );
 }
 
