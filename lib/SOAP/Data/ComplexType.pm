@@ -2,8 +2,9 @@ package SOAP::Data::ComplexType;
 use strict;
 use warnings;
 use Carp ();
+use Scalar::Util;
 
-our $VERSION = 0.031;
+our $VERSION = 0.04;
 
 use constant OBJ_URI 	=> undef;
 use constant OBJ_TYPE	=> undef;	#format: ns:type
@@ -25,16 +26,32 @@ sub new {
 sub _convert_object_to_raw {	#recursive method: convert any object elements into perl primitives
 	my $self = shift;
 	my $obj = shift;
+	my $ancestors = shift;
+	
+	my $addr = Scalar::Util::refaddr($obj);
+	if (defined $ancestors) {
+		if (grep(/^$addr$/, @{$ancestors})) {
+			warn "Recursive processing halted: Circular reference with ancestor $addr detected\n";
+			return undef;
+		}
+		push @{$ancestors}, $addr;
+	}
+	else {
+		$ancestors = [$addr];
+	}
 
 	my $ret;
-	if (UNIVERSAL::isa($obj, 'HASH')) {
-		$ret->{$_} = ref($obj->{$_}) ? $self->_convert_object_to_raw($obj->{$_}) : $obj->{$_} foreach (keys %{$obj});
+	if (UNIVERSAL::isa($obj, 'Array')) {	#special case: complex type Array is stored as a hash, needs conversion to native perl
+		push @{$ret}, ref($obj->{$_}) ? $self->_convert_object_to_raw($obj->{$_}, $ancestors) : $obj->{$_} foreach (keys %{$obj});
+	}	
+	elsif (UNIVERSAL::isa($obj, 'HASH')) {
+		$ret->{$_} = ref($obj->{$_}) ? $self->_convert_object_to_raw($obj->{$_}, $ancestors) : $obj->{$_} foreach (keys %{$obj});
 	}
 	elsif (UNIVERSAL::isa($obj, 'ARRAY')) {
-		push @{$ret}, ref($_) ? $self->_convert_object_to_raw($_) : $_ foreach (@{$obj});
+		push @{$ret}, ref($_) ? $self->_convert_object_to_raw($_, $ancestors) : $_ foreach (@{$obj});
 	}
 	elsif (UNIVERSAL::isa($obj, 'SCALAR')) {	#future: do we *really* want to deref scalarref?
-		$ret = ref(${$obj}) ? $self->_convert_object_to_raw(${$obj}) : ${$obj};
+		$ret = ref(${$obj}) ? $self->_convert_object_to_raw(${$obj}, $ancestors) : ${$obj};
 	}
 	else {	#base case
 		$ret = $obj;
@@ -47,33 +64,66 @@ sub _parse_obj_fields {	#recursive method
 	my $data = shift;
 	my $obj_fields = shift;
 	my $parent_obj = shift;
+	my $parent_obj_is_arraytype = shift;
 
 	### validate parameters ###
-	my $ret_href;
-	unless (ref($data) && UNIVERSAL::isa($data, 'HASH')) {
+	unless (UNIVERSAL::isa($data, 'HASH')) {
 		Carp::confess "Input data not expected ref type: HASH";
-		return undef;
 	}
-	unless (ref($obj_fields) eq 'HASH' && scalar keys %{$obj_fields} > 0) {
+	unless (UNIVERSAL::isa($obj_fields, 'HASH') && scalar keys %{$obj_fields} > 0) {
 		Carp::confess "Object field definitions invalid or undefined.";
-		return undef;
 	}
 
 	### generate data structures ###
 	foreach my $key (keys %{$obj_fields}) {
 		my $key_regex = quotemeta $key;
-		if (grep(/^$key_regex$/, keys %{$data})) {
+		if ($parent_obj_is_arraytype) {	#array special case: define child object that becomes parent of array values
+			my ($type, $uri, $attributes) = @{$obj_fields->{$key}};
+			my $value = $data;
+#			if ($required) {
+#				Carp::cluck "Warning: Required field '$key' is null" && next unless (UNIVERSAL::isa($value, 'HASH') && scalar keys %{$value}) || (UNIVERSAL::isa($value, 'ARRAY') && @{$value});
+#			}
+			my ($c_type, $c_fields);
+			if (UNIVERSAL::isa($type, 'ARRAY')) {
+				($c_type, $c_fields) = @{$type};
+			}
+			my $obj = $self->{_sdb_obj}->add_elem(
+				name		=> $key,
+				value		=> undef,
+				type		=> defined $c_type ? $c_type : $type,	#if array of complex type, else array of simple type
+				uri			=> $uri,
+				attributes	=> $attributes,
+				parent		=> $parent_obj
+			);					
+			my @values = UNIVERSAL::isa($value, 'ARRAY') ? @{$value} : ($value);
+			foreach my $val (@values) {
+				if (UNIVERSAL::isa($type, 'ARRAY')) {	#recursion case: complex subtype up to N levels deep
+					if (UNIVERSAL::isa($val, 'HASH')) { $self->_parse_obj_fields($val, $c_fields, $obj, $c_type =~ m/(^|.+:)Array$/o ? 1 : 0); }
+					else { Carp::cluck "Warning: Expected hash ref value for key '$key', found scalar. Ignoring data value '$val'" if defined $val; }
+				}
+				else {	#base case
+					$self->{_sdb_obj}->add_elem(
+						name		=> $key,
+						value		=> $val,
+						type		=> $type,
+						uri			=> $uri,
+						attributes	=> $attributes,
+						parent		=> $obj
+					);
+				}
+			}
+		}
+		elsif (grep(/^$key_regex$/, keys %{$data})) {	#base object processing
 			my ($type, $uri, $attributes) = @{$obj_fields->{$key}};
 			my $value = $data->{$key};
-#			my ($type, $required, $uri, $attributes) = @{$obj_fields->{$key}};
 #			if ($required) {
-#				Carp::cluck "Warning: Required field '$key' is null" && next unless (ref($value) eq 'HASH' && scalar keys %{$value}) || (ref($value) eq 'ARRAY' && @{$value});
+#				Carp::cluck "Warning: Required field '$key' is null" && next unless (UNIVERSAL::isa($value, 'HASH') && scalar keys %{$value}) || (UNIVERSAL::isa($value, 'ARRAY') && @{$value});
 #			}
-			if (ref($type) eq 'ARRAY') {	#recursion case: complex subtype up to N levels deep
+			if (UNIVERSAL::isa($type, 'ARRAY')) {
 				my ($c_type, $c_fields) = @{$type};
-				my @values = ref($value) eq 'ARRAY' ? @{$value} : ($value);
-				foreach my $val (@values) {	#future: need support for multidimensional arrays
-					my $obj = $self->{_sdb_obj}->add_elem(
+				my $array_obj;
+				if ($c_type =~ m/(^|.+:)Array$/o) {	#complex array
+					$array_obj = $self->{_sdb_obj}->add_elem(
 						name		=> $key,
 						value		=> undef,
 						type		=> $c_type,
@@ -81,16 +131,29 @@ sub _parse_obj_fields {	#recursive method
 						attributes	=> $attributes,
 						parent		=> $parent_obj
 					);
+				}
+				my @values = UNIVERSAL::isa($value, 'ARRAY') ? @{$value} : ($value);
+				foreach my $val (@values) {
+					my $obj = $c_type =~ m/(^|.+:)Array$/o 
+						? $array_obj	#complex array
+						: $self->{_sdb_obj}->add_elem(	#simple array
+							name		=> $key,
+							value		=> undef,
+							type		=> $c_type,
+							uri			=> $uri,
+							attributes	=> $attributes,
+							parent		=> $parent_obj
+						);
 #warn "Added element $key\n";
-					if (ref($val) eq 'HASH') { $self->_parse_obj_fields($val, $c_fields, $obj); }
-					else { Carp::cluck "Warning: Expected hash or array ref value for key '$key', found scalar. Ignoring data value '$val'" if defined $val; }
+					if (UNIVERSAL::isa($val, 'HASH')) { $self->_parse_obj_fields($val, $c_fields, $obj, $c_type =~ m/(^|.+:)Array$/o ? 1 : 0); }
+					else { Carp::cluck "Warning: Expected hash ref value for key '$key', found scalar. Ignoring data value '$val'" if defined $val; }
 				}
 			}
 			else {	#base case
 #				if ($required) {
 #					Carp::cluck "Warning: Required field '$key' is null" && next unless defined $value;
 #				}
-				my @values = ref($value) eq 'ARRAY' && $type !~ m/:Array$/ ? @{$value} : ($value);	#note: does this correctly support SOAP Arrays?
+				my @values = UNIVERSAL::isa($value, 'ARRAY') ? @{$value} : ($value);
 				$self->{_sdb_obj}->add_elem(
 					name		=> $key,
 					value		=> $_,
@@ -103,7 +166,6 @@ sub _parse_obj_fields {	#recursive method
 			}
 		}
 	}
-	return $ret_href;
 }
 
 sub DESTROY {}
@@ -116,26 +178,54 @@ sub AUTOLOAD {
 	my $value = shift;
 	$name =~ s/.*://o;   # strip fully-qualified portion
 	my $elem;
-	unless (defined ($elem = $self->{_sdb_obj}->get_elem($name))) {
-		Carp::cluck "Can't access '$name' element object in class $class";
-		return undef;
-	}
-	return defined $value ? @{$elem->value($value)}[0] : $self->as_raw_data($name);	#set value if param passed
+	my @res = defined $value ? $self->set($name, $value) : $self->get($name);
+	return @res ? wantarray ? @res : $res[0] : ();
 }
 
-sub get_elem { shift->set_elem($_[0]); }
+sub get_elem {
+	my $self = shift;
+	my $class = ref($self) || Carp::confess "'$self' is not an object";
+	my $name = shift;
+	my $elem;
+	unless (defined ($elem = $self->{_sdb_obj}->get_elem($name))) {
+		Carp::cluck "Can't access '$name' element object in class $class";
+	}
+	return $elem;
+}
 
-sub set_elem {
+sub get {
+	my $self = shift;
+	my $class = ref($self) || Carp::confess "'$self' is not an object";
+	my $name = shift;
+	my $elem;
+	return undef unless defined ($elem = $self->get_elem($name));
+	my $res = $elem->value();
+	return defined $res ? wantarray ? @{$res} : $res->[0] : $res;
+}
+
+sub set {
 	my $self = shift;
 	my $class = ref($self) || Carp::confess "'$self' is not an object";
 	my $name = shift;
 	my $value = shift;
-	my $elem;
-	unless (defined ($elem = $self->{_sdb_obj}->get_elem($name))) {
-		Carp::cluck "Can't access '$name' element object in class $class";
-		return undef;
+	
+	### validate input is valid object or list of objects ###
+	if (ref $value) {
+		if (ref($value) eq 'ARRAY') {
+			foreach (@{$value}) {
+				Carp::cluck "Value ".ref($_)." is not a valid SOAP::Data::ComplexType::Builder::Element object" if ref($_) && UNIVERSAL::isa($_, 'SOAP::Data::ComplexType::Builder::Element');
+				return undef;
+			}
+		} else {
+			Carp::cluck "Value ".ref($_)." is not a valid SOAP::Data::ComplexType::Builder::Element object" unless UNIVERSAL::isa($value, 'SOAP::Data::ComplexType::Builder::Element');
+			return undef;
+		}
 	}
-	return @{$elem->value($value)}[0];
+	
+	my $elem;
+	return undef unless ($elem = $self->get_elem($name));
+	my $res = $elem->value(ref($value) eq 'ARRAY' ? $value : [$value]);
+	return defined $res ? wantarray ? @{$res} : $res->[0] : $res;
 }
 
 sub as_soap_data {
@@ -170,8 +260,6 @@ use SOAP::Data::Builder 0.8;
 use vars qw(@ISA);
 @ISA = qw(SOAP::Data::Builder);
 
-use constant BUILDER_ELEMENT => 'SOAP::Data::ComplexType::Builder::Element';
-
 sub new {
 	my $proto = shift;
 	my $class = ref($proto) || $proto;
@@ -184,7 +272,7 @@ sub add_elem {
 	my $elem = SOAP::Data::ComplexType::Builder::Element->new(%args);
 	if ( defined $args{parent} ) {
 		my $parent = $args{parent};
-		unless (UNIVERSAL::isa($parent, BUILDER_ELEMENT)) {
+		unless (UNIVERSAL::isa($parent, 'SOAP::Data::ComplexType::Builder::Element')) {
 			$parent = $self->get_elem($args{parent});
 		}
 		$parent->add_elem($elem);
@@ -195,93 +283,30 @@ sub add_elem {
 }
 
 sub find_elem {
-    my ($self,$parent,$key,@keys) = @_;
-    my ($a,$b);
-    if (UNIVERSAL::isa($parent, BUILDER_ELEMENT)) {
-		foreach my $elem ( $parent->get_children()) {
-			next unless ref $elem;
-			if ($elem->{name} eq $key) {
-				$a = $elem;
-				$b = $key;
-				last;
-			}
-		}
-	}
-
-    my $elem = $a;
-    undef($b);
-    while ($b = shift(@keys) ) {
-        $elem = $self->find_elem($elem,$b,@keys);
-    }
-    return $elem;
+	my ($self,$elem,$key,@keys) = @_;
+	return UNIVERSAL::isa($elem, 'SOAP::Data::ComplexType::Builder::Element') ? $elem->find_elem($key,@keys) : undef;
 }
 
 sub get_as_data {
-	my ($self,$elem) = @_;
-	my @values;
-	if (UNIVERSAL::isa($elem, BUILDER_ELEMENT)) {
-		foreach my $value ( @{$elem->value} ) {
-			next unless (defined $value);
-			if (ref $value) {
-				push(@values,$self->get_as_data($value))
-			} else {
-				push(@values,$value);
-			}
-		}
-	}
-	my @data = ();
-
-	if (ref $values[0]) {
-		$data[0] = \SOAP::Data->value( @values );
-		} else {
-			@data = @values;
-		}
-		if ($elem->{header}) {
-			$data[0] = SOAP::Header->name($elem->{name} => $data[0])->attr($elem->attributes())->type($elem->{type})->uri($elem->{uri});
-		} else {
-		if ($elem->{isMethod}) {
-			@data = ( SOAP::Data->name($elem->{name})->attr($elem->attributes())->type($elem->{type})->uri($elem->{uri}) 
-				=> SOAP::Data->value(@values)->type($elem->{type})->uri($elem->{uri}) );
-		} else {
-			$data[0] = SOAP::Data->name($elem->{name} => $data[0])->attr($elem->attributes())->type($elem->{type})->uri($elem->{uri});
-		}
-	}
-	return @data;
+	my $self = shift;
+	my $elem = shift;
+	return UNIVERSAL::isa($elem, 'SOAP::Data::ComplexType::Builder::Element') ? $elem->get_as_data() : undef;
 }
 
 sub to_raw_data {
 	my $self = shift;
 	my @data = ();
 	foreach my $elem ( $self->elems ) {
-		push(@data,%{$self->get_as_raw($elem,1)});
+		my $raw = $self->get_as_raw($elem);
+		push(@data,ref($raw) eq 'HASH' ? %{$raw} : ref($raw) eq 'ARRAY' ? @{$raw} : $raw);
 	}
 	return {@data};
 }
 
 sub get_as_raw {
-	my ($self,$elem) = @_;
-	my @values;
-	if (UNIVERSAL::isa($elem, BUILDER_ELEMENT)) {
-		foreach my $value ( @{$elem->value} ) {
-			if (ref $value) {	#ref => object
-				push(@values,$self->get_as_raw($value))
-			} else {
-				push(@values,$value);
-			}
-		}
-	}
-	push @values, undef unless @values;	#insure undef value has the value undef
-	my %data = ();
-
-	foreach my $value (@values) {
-		if (ref $value) {	#ref => HASH
-			$data{$elem->name}->{$_} = $value->{$_} foreach keys %{$value};
-		} else {
-			$data{$elem->name} = $value;	#node can only have scalar value if value is a scalar
-			last;
-		}
-	}
-	return \%data;
+	my $self = shift;
+	my $elem = shift;
+	return UNIVERSAL::isa($elem, 'SOAP::Data::ComplexType::Builder::Element') ? $elem->get_as_raw() : undef;
 }
 
 sub serialise {
@@ -301,6 +326,9 @@ use warnings;
 use SOAP::Data::Builder::Element;
 use vars qw(@ISA);
 @ISA = qw(SOAP::Data::Builder::Element);
+use Carp ();
+use Scalar::Util;
+our $AUTOLOAD;
 
 sub new {
 	my ($class,%args) = @_;
@@ -310,11 +338,105 @@ sub new {
 		$self->{$key} = defined $args{$key} ? $args{$key} : undef;
 	}
 	if ($args{parent}) {
-		$self->{fullname} = (ref $args{parent}) ? $args{parent}->{fullname}: "$args{parent}/$args{name}";
+		Scalar::Util::weaken($self->{parent}) if ref $args{parent};
+		$self->{fullname} = (ref $args{parent} ? $args{parent}->{fullname} : $args{parent})."/$args{name}";
 	}
 	$self->{fullname} ||= $args{name};
 	$self->{VALUE} = defined $args{value} ? [ $args{value} ] : [];
 	return $self;
+}
+
+sub DESTROY {}
+sub CLONE {}
+
+sub AUTOLOAD {
+	my $self = shift;
+	my $class = ref($self) || Carp::confess "'$self' is not an object";
+	my $name = $AUTOLOAD;
+	my $value = shift;
+	$name =~ s/.*://o;   # strip fully-qualified portion
+	my $elem;
+	my @res = defined $value ? $self->set($name, $value) : $self->get($name);
+	return @res ? wantarray ? @res : $res[0] : ();
+}
+
+sub get_elem {
+    my ($self,$name) = (@_,'');
+    my ($a,$b);
+    my @keys = split (/\//,$name);
+    foreach my $elem ( $self->get_children()) {
+		next unless ref $elem;
+		if ($elem->name eq $keys[0]) {
+		    $a = $elem;
+		    $b = shift(@keys);
+		    last;
+		}
+    }
+
+	Carp::cluck "Can't access '$name' element object in class ".ref($self) unless defined $a;
+    my $elem = $a;
+    $b = shift(@keys);
+    if ($b) {
+		$elem = $elem->find_elem($b,@keys);
+    }
+	
+	Carp::cluck "Can't access '$name' element object in class ".ref($self) unless defined $elem;
+    return $elem;
+}
+
+sub find_elem {
+    my ($self,$key,@keys) = @_;
+    my ($a,$b);
+	foreach my $elem ( $self->get_children()) {
+		next unless ref $elem;
+		if ($elem->{name} eq $key) {
+			$a = $elem;
+			$b = $key;
+			last;
+		}
+	}
+
+    my $elem = $a;
+    undef($b);
+    while ($b = shift(@keys) ) {
+        $elem = $elem->find_elem($b,@keys);
+    }
+    return $elem;
+}
+
+sub get {
+	my $self = shift;
+	my $class = ref($self) || Carp::confess "'$self' is not an object";
+	my $name = shift;
+	my $elem;
+	return undef unless defined ($elem = $self->get_elem($name));
+	my $res = $elem->value();
+	return defined $res ? wantarray ? @{$res} : $res->[0] : $res;
+}
+
+sub set {
+	my $self = shift;
+	my $class = ref($self) || Carp::confess "'$self' is not an object";
+	my $name = shift;
+	my $value = shift;
+	
+	### validate input is valid object or list of objects ###
+	if (ref $value) {
+		if (ref($value) eq 'ARRAY') {
+			foreach (@{$value}) {
+				Carp::cluck "Value ".ref($_)." is not a valid SOAP::Data::ComplexType::Builder::Element object" if ref($_) && UNIVERSAL::isa($_, 'SOAP::Data::ComplexType::Builder::Element');
+				return undef;
+			}
+		} else {
+			Carp::cluck "Value ".ref($_)." is not a valid SOAP::Data::ComplexType::Builder::Element object" unless UNIVERSAL::isa($value, 'SOAP::Data::ComplexType::Builder::Element');
+			return undef;
+		}
+	}
+	
+	my $elem;
+	return undef unless ($elem = $self->get_elem($name));
+	my $res = $elem->value(ref($value) eq 'ARRAY' ? $value : [$value]);
+	return defined $res ? wantarray ? @{$res} : $res->[0] : $res;
 }
 
 sub add_elem {
@@ -353,22 +475,26 @@ sub name {
 sub value {
 	my $self = shift;
 	my $value = shift;
+	my $last_value;
 	if (defined $value) {
 		if (ref $value) {
+			$last_value = $self->{VALUE};
 			$self->{VALUE} = $value;
 		} else {
+			$last_value = $self->{VALUE};
 			$self->{VALUE} = defined $value ? [$value] : [];
 		}
 	} else {
-		$value = $self->{VALUE};
+		$last_value = $value = $self->{VALUE};
 	}
-	return $value;
+	return $last_value;
 }
 
 sub get_as_data {
 	my $self = shift;
 	my @values;
 	foreach my $value ( @{$self->{VALUE}} ) {
+		next unless (defined $value);
 		if (ref $value) {
 			push(@values,$value->get_as_data())
 		} else {
@@ -384,14 +510,17 @@ sub get_as_data {
 		@data = @values;
 	}
 
+	my %attributes = %{$self->attributes()};
+	my $arrayTypeAttr = (grep(/(^|.+:)arrayType$/, keys %attributes))[0];
+	$attributes{$arrayTypeAttr} = $attributes{$arrayTypeAttr}.'['.(scalar @values).']' if defined $arrayTypeAttr;
 	if ($self->{header}) {
-		$data[0] = SOAP::Header->name($self->{name} => $data[0])->attr($self->attributes())->type($self->{type})->uri($self->{uri});
+		$data[0] = SOAP::Header->name($self->{name} => $data[0])->attr(\%attributes)->type($self->{type})->uri($self->{uri});
 	} else {
 		if ($self->{isMethod}) {
-			@data = ( SOAP::Data->name($self->{name})->attr($self->attributes())->type($self->{type})->uri($self->{uri}) 
+			@data = ( SOAP::Data->name($self->{name})->attr(\%attributes)->type($self->{type})->uri($self->{uri}) 
 				=> SOAP::Data->value(@values)->type($self->{type})->uri($self->{uri}) );
 		} else {
-			$data[0] = SOAP::Data->name($self->{name} => $data[0])->attr($self->attributes())->type($self->{type})->uri($self->{uri});
+			$data[0] = SOAP::Data->name($self->{name} => $data[0])->attr(\%attributes)->type($self->{type})->uri($self->{uri});
 		}
 	}
 
@@ -400,35 +529,49 @@ sub get_as_data {
 
 sub get_as_raw {
 	my $self = shift;
+	my $is_parent_arraytype = shift;
 	my @values;
 	foreach my $value ( @{$self->{VALUE}} ) {
 		if (ref $value) {	#ref => object
-			push(@values,$value->get_as_raw())
+			push(@values,$value->get_as_raw($self->{type} =~ m/(^|.+:)Array$/o ? 1 : 0))
 		} else {
 			push(@values,$value);
 		}
 	}
 	push @values, undef unless @values;	#insure undef value has the value undef
-	my %data = ();
-
-	foreach my $value (@values) {
-		if (ref $value) {	#ref => HASH
-			$data{$self->{name}}->{$_} = $value->{$_} foreach keys %{$value};
-		} else {
-			$data{$self->{name}} = $value;	#node can only have scalar value if value is a scalar
-			last;
+	my $data;
+	if ($self->{type} =~ m/(^|.+:)Array$/o) {
+		$data->{$self->{name}} = \@values;
+	}
+	else {
+		foreach my $value (@values) {
+			if ($is_parent_arraytype) {
+				if (ref $value eq 'HASH') {
+					$data->{$_} = $value->{$_} foreach keys %{$value};
+				} else {
+					$data = $value;
+				}
+			} else {
+				if (ref $value eq 'HASH') {
+					$data->{$self->{name}}->{$_} = $value->{$_} foreach keys %{$value};
+				} else {
+					$data->{$self->{name}} = $value;
+				}
+			}
 		}
 	}
 
-	return \%data;
+	return $data;
 }
 
 1;
 
 __END__
+=pod
+
 =head1 NAME
 
-SOAP::Data::ComplexType - An easy interface for creating and implementing infinitely complex SOAP::Data objects
+SOAP::Data::ComplexType - An abstract class for creating and handling complex SOAP::Data objects
 
 =head1 SYNOPSIS
 
@@ -452,7 +595,7 @@ SOAP::Data::ComplexType - An easy interface for creating and implementing infini
 		my $class = ref($proto) || $proto;
 		my $data = shift;
 		my $obj_fields = shift;
-		$obj_fields = defined $obj_fields && ref($obj_fields) eq 'HASH' ? {%{$obj_fields}, %{+OBJ_FIELDS}} : OBJ_FIELDS;
+		$obj_fields = defined $obj_fields && ref($obj_fields) eq 'HASH' ? {%{+OBJ_FIELDS}, %{$obj_fields}} : OBJ_FIELDS;
 		my $self = $class->SUPER::new($data, $obj_fields);
 		return bless($self, $class);
 	}
@@ -482,7 +625,7 @@ SOAP::Data::ComplexType - An easy interface for creating and implementing infini
 		my $class = ref($proto) || $proto;
 		my $data = shift;
 		my $obj_fields = shift;
-		$obj_fields = defined $obj_fields && ref($obj_fields) eq 'HASH' ? {%{$obj_fields}, %{+OBJ_FIELDS}} : OBJ_FIELDS;
+		$obj_fields = defined $obj_fields && ref($obj_fields) eq 'HASH' ? {%{+OBJ_FIELDS}, %{$obj_fields}} : OBJ_FIELDS;
 		my $self = $class->SUPER::new($data, $obj_fields);
 		return bless($self, $class);
 	}
@@ -546,14 +689,14 @@ implement inheritance.
 
 Every class must define the following compile-time constants:
 
-	OBJ_URI:   URI specific to this complex type
-	OBJ_TYPE:  namespace and type of the complexType (formatted like 'myNamespace1:myDataType')
+	OBJ_URI:    URI specific to this complex type
+	OBJ_TYPE:   namespace and type of the complexType (formatted like 'myNamespace1:myDataType')
 	OBJ_FIELDS: hashref containing name => arrayref pairs; see L<ComplexType field definitions>
 
 When creating your constructor, if you plan to support inheritance, you must perform the following action:
 
 	my $obj_fields = $_[1];	#second param from untouched @_
-	$obj_fields = defined $obj_fields && ref($obj_fields) eq 'HASH' ? {%{$obj_fields}, %{+OBJ_FIELDS}} : OBJ_FIELDS;
+	$obj_fields = defined $obj_fields && ref($obj_fields) eq 'HASH' ? {%{+OBJ_FIELDS}, %{$obj_fields}} : OBJ_FIELDS;
 	my $self = $class->SUPER::new($data, $obj_fields);
 
 which insures that you support child class fields and pass a combination of them and your fields to
@@ -626,7 +769,7 @@ or, for complexType values:
 
 =head1 Object Methods
 
-=head2 $obj->get_elem( NAME )
+=head2 $obj->get( NAME )
 
 Returns the value of the request element.  If the element is not at the top level
 in a hierarchy of ComplexTypes, this method will recursively parse through the
@@ -649,7 +792,12 @@ This example would expect to find the element in the following hierarchy:
 		</TO>
 	</PATH>
 	
-=head2 $obj->set_elem ( NAME, NEW_VALUE )
+=head2 $obj->get_elem( NAME )
+
+Returns the object representing the request element.  Rules for how the NAME parameter
+is used are the same as those defined for the L<"$obj->get( NAME )"> method.
+
+=head2 $obj->set( NAME, NEW_VALUE )
 
 Sets the value of the element NAME to the value NEW_VALUE.  Rules for what may be
 used for valid NAME parameters and how they are used are explained in documentation
@@ -670,7 +818,14 @@ Returns all data formatted as an XML string.
 
 =head2 $obj->as_raw_data
 
-Returns all data formatted as a Perl hash.
+Returns all data formatted as a Perl hashref.
+
+=head1 Other supported SOAP classes
+
+=head2 SOAP::Data::ComplexType::Array
+
+This is an abstract class that represents the native Array complex type in SOAP.  See
+L<SOAP::Data::ComplexType::Array> for more information and usage.
 
 =head1 TODO
 
@@ -682,21 +837,19 @@ ComplexType classes, thus eliminating nearly all the usual grunt effort of integ
 Perl application with complex applications running under modern SOAP services such as
 Apache Axis or Microsoft .NET.
 
-Add a test suite.
-
-Improve on this documentation.
+Add support for restriction and range definitions (properties supported in a normal XML
+spec).
 
 =head1 CAVIATS
 
-Changing the value of a field after it is set should also be able to support complex data 
-structures, correctly imported into the complex type definition. Currently, only simple 
-scalar values are supported.
+Multi-dimensional and sparse arrays of B<simple> type data are not yet supported, due to 
+limitations of array data serialization capabilities in SOAP::Lite.
 
 The OBJ_FIELD data structure may change in future versions to more cleanly support 
 SOAP::Data parameters.  For now, I plan to keep it an array reference and simply append
-on new SOAP::Data parameters as they are implemented.  Accessor methods may change as well,
-as the current interface is a little weak--it only returns first matched occurance of an
-element in the tree if there are multiple same-named elements.
+on new SOAP::Data parameters as they are implemented.  Simple accessor methods may change
+as well, as the current interface is a little weak--it only returns first matched occurance
+of an element in the tree if there are multiple same-named elements.
 
 =head1 BUGS
 
@@ -704,7 +857,7 @@ None known at this time. Bug reports and design suggestions are always welcome.
 
 =head1 AUTHOR
 
-Eric Rybski
+Eric Rybski <rybskej@yahoo.com>.
 
 =head1 COPYRIGHT AND LICENSE
 

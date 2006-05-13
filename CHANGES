@@ -1,3 +1,26 @@
+0.04	13 May 2006
+	Added get() and set() accessor methods.  Autoload accessor methods changed to implement these methods.  get() will now return a list of values if the caller
+	expects array form.
+	
+	When changing the value of an element, the return value is now the previous value
+	that was stored before the change.  Also, SOAP::Data::ComplexType::Builder element is now supported as a valid value to set (multiple values may be specified within an arrayref).
+	
+	Deprecated and removed set_elem() method.
+	
+	Changed purpose of get_elem to return the actual object representation of that element, instead of the value.
+	
+	Added a comprehensive test suite.
+	
+	Fixed memory leak regarding circular references of parent objects in child objects.
+	
+	Added recursion detection and prevention in data structure passed to new() constructor.
+	
+	Added complete support for complex Array classes (that extend the SOAP Array class).
+	
+	Many internal architectural changes, including streamlining SOAP::Data::ComplexType::Builder and adding many support methods to SOAP::Data::ComplexType::Builder::Element.
+	
+	Corrected a minor object type checking bug in SOAP::Data::ComplexType::Builder method get_as_data.
+
 0.031	27 February 2006
 	SOAP::Data::ComplexType::AUTLOAD now warns with stack traces instead of dieing on them.
 	Intention is to have run-time stability preferred without requiring exception traps everywhere in implementing applications (for now).

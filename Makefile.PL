@@ -10,4 +10,5 @@ WriteMakefile (
  PREREQ_PM	=> {
   'SOAP::Data::Builder' => 0.8,
  },
+ (MM->can('signature_target') ? (SIGN => 1) : ()),
 );
