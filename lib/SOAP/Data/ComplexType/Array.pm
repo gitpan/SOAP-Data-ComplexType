@@ -1,6 +1,6 @@
 package SOAP::Data::ComplexType::Array;
 
-$VERSION = 0.04;
+$VERSION = 0.041;
 
 use strict;
 use warnings;
@@ -105,6 +105,10 @@ SOAP::Data::ComplexType::Array - Abstract class for native SOAP Array complex ty
 			My::SOAP::Data::ComplexType::ArrayOfSomeItem::OBJ_URI,
 			{ 'SOAP-ENC:arrayType' => My::SOAP::Data::ComplexType::ArrayOfSomeItem::OBJ_ARRAY_TYPE },
 		],
+		simpleArrayField	=> [
+			'SOAP-ENC:Array', undef, undef
+			{ 'SOAP-ENC:arrayType' => 'float' },
+		],
 	};
 
 	sub new {
@@ -132,6 +136,11 @@ SOAP::Data::ComplexType::Array - Abstract class for native SOAP Array complex ty
 				item2	=> 98765.4321,
 				item3	=> 'fdsa'
 			}
+		],
+		simpleArrayField => [
+			1.5
+			5.1
+			1234.5678
 		]
 	});
 
@@ -155,7 +164,7 @@ Since SOAP::Data::ComplexType::Array is a subclass of SOAP::Data::ComplexType,
 you must follow the usual L<SOAP::Data/IMPLEMENTATION>, with the following
 additional compile-time constant:
 
-	OBJ_ARRAY_TYPE: namespace and type of the complexType (formatted like 'myNamespace1:myDataType')
+	OBJ_ARRAY_TYPE: namespace and type of the complexType (formatted like 'myNamespace:myDataType')
 	
 For your subclass of SOAP::Data::ComplexType::Array, compile-time constant
 OBJ_TYPE B<must> be explcitiy defined as 'ns:Array', as in:

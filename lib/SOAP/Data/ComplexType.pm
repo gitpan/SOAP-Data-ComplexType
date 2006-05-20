@@ -4,7 +4,7 @@ use warnings;
 use Carp ();
 use Scalar::Util;
 
-our $VERSION = 0.04;
+our $VERSION = 0.041;
 
 use constant OBJ_URI 	=> undef;
 use constant OBJ_TYPE	=> undef;	#format: ns:type
@@ -179,7 +179,7 @@ sub AUTOLOAD {
 	$name =~ s/.*://o;   # strip fully-qualified portion
 	my $elem;
 	my @res = defined $value ? $self->set($name, $value) : $self->get($name);
-	return @res ? wantarray ? @res : $res[0] : ();
+	return wantarray ? @res : $res[0];
 }
 
 sub get_elem {
@@ -200,7 +200,13 @@ sub get {
 	my $elem;
 	return undef unless defined ($elem = $self->get_elem($name));
 	my $res = $elem->value();
-	return defined $res ? wantarray ? @{$res} : $res->[0] : $res;
+	if ($elem->{type} =~ m/(^|.+:)Array$/o) {
+		return wantarray ? @{$res} : scalar @{$res} if defined $res;
+		return wantarray ? () : 0;
+	}
+	else {
+		return defined $res ? $res->[0] : undef;
+	}
 }
 
 sub set {
@@ -225,7 +231,13 @@ sub set {
 	my $elem;
 	return undef unless ($elem = $self->get_elem($name));
 	my $res = $elem->value(ref($value) eq 'ARRAY' ? $value : [$value]);
-	return defined $res ? wantarray ? @{$res} : $res->[0] : $res;
+	if ($elem->{type} =~ m/(^|.+:)Array$/o) {
+		return wantarray ? @{$res} : scalar @{$res} if defined $res;
+		return wantarray ? () : 0;
+	}
+	else {
+		return defined $res ? $res->[0] : undef;
+	}
 }
 
 sub as_soap_data {
@@ -335,7 +347,7 @@ sub new {
 	my $self = {};
 	bless ($self,ref $class || $class);
 	foreach my $key (keys %args) {
-		$self->{$key} = defined $args{$key} ? $args{$key} : undef;
+		$self->{lc $key} = defined $args{$key} ? $args{$key} : undef;
 	}
 	if ($args{parent}) {
 		Scalar::Util::weaken($self->{parent}) if ref $args{parent};
@@ -357,7 +369,7 @@ sub AUTOLOAD {
 	$name =~ s/.*://o;   # strip fully-qualified portion
 	my $elem;
 	my @res = defined $value ? $self->set($name, $value) : $self->get($name);
-	return @res ? wantarray ? @res : $res[0] : ();
+	return wantarray ? @res : $res[0];
 }
 
 sub get_elem {
@@ -411,7 +423,13 @@ sub get {
 	my $elem;
 	return undef unless defined ($elem = $self->get_elem($name));
 	my $res = $elem->value();
-	return defined $res ? wantarray ? @{$res} : $res->[0] : $res;
+	if ($elem->{type} =~ m/(^|.+:)Array$/o) {
+		return wantarray ? @{$res} : scalar @{$res} if defined $res;
+		return wantarray ? () : 0;
+	}
+	else {
+		return defined $res ? $res->[0] : undef;
+	}
 }
 
 sub set {
@@ -436,27 +454,24 @@ sub set {
 	my $elem;
 	return undef unless ($elem = $self->get_elem($name));
 	my $res = $elem->value(ref($value) eq 'ARRAY' ? $value : [$value]);
-	return defined $res ? wantarray ? @{$res} : $res->[0] : $res;
+	if ($elem->{type} =~ m/(^|.+:)Array$/o) {
+		return wantarray ? @{$res} : scalar @{$res} if defined $res;
+		return wantarray ? () : 0;
+	}
+	else {
+		return defined $res ? $res->[0] : undef;
+	}
 }
 
 sub add_elem {
     my $self = shift;
     my $elem;
-    if (ref $_[0] eq __PACKAGE__) {
+    if (UNIVERSAL::isa($_[0], __PACKAGE__)) {
 		$elem = $_[0];
 		push(@{$self->{VALUE}},$elem);
     } else {
-		$elem = {};
-		bless ($elem,ref $self);
-		my %args = @_;
-		foreach my $key (keys %args) {
-			$elem->{$key} = defined $args{$key} ? $args{$key} : undef;
-		}
-		$elem->{fullname} = $self->{fullname}."/$args{name}";
-		$elem->{VALUE} = defined $args{value} ? [ $args{value} ] : [];
-		$elem->{TYPE} = [ $args{type} ];
-		$elem->{URI} = [ $args{uri} ];
-		push(@{$self->{VALUE}},$elem);
+    	my $class = ref $self;
+		push(@{$self->{VALUE}},$class->new(@_));
     }
     return $elem;
 }
@@ -757,6 +772,8 @@ An example might be:
 
 	{ keya => { subkey1 => val1, subkey2 => val2 }, keyb => { subkey3 => val3 } }
 
+=head3 Using arrays and Array type fields
+
 When you have a ComplexType that allows for multiple elements of the same name
 (i.e. xml attribute maxOccurs > 1), use the following example form for simpleType 
 values:
@@ -765,7 +782,19 @@ values:
 	
 or, for complexType values:
 	
-	{ keya => [ {key1 => val1}, {key2 => val2}, {key3 => val3} ] }
+	{ keya => [ {key1 => val1}, {key1 => val2}, {key1 => val3} ] }
+
+In such cases, the field type definition B<must> be 'ns:Array' (e.g. SOAP-ENC:Array)
+and you B<must> define an 'arrayType' attribute (e.g. SOAP-ENC:arrayType); otherwise,
+it will be assumed that your field can only support scalar values.  This is primarily
+due to functional requirements of how SOAP::Lite handles arrays, but also has implications
+on how ComplexType data values are returned by the various accessor methods.
+Specifically, if your object is a SOAP Array type, then accessor methods will return
+a list of elements in array context, or the number of elements in scalar context;
+however, if your object is any other type, then accessor methods will return all
+values in scalar context.
+
+See L<SOAP::Data::ComplexType::Array> for additional information and definition examples.
 
 =head1 Object Methods
 
@@ -829,6 +858,14 @@ L<SOAP::Data::ComplexType::Array> for more information and usage.
 
 =head1 TODO
 
+Finish rewriting internals to use a single complextype package instead of two, such
+that all methods can be used at any level of the hierarchy.  This should simplify
+syntax needed for data mining lookup objects, and reduce complexity of manipulating the
+object overall.
+
+Add a test suite to test expected list vs. scalar result sets for Array type complex
+objects and simple type objects.
+
 Support for more properties of a SOAP::Data object.  Currently only type, uri, attributes,
 and value are supported.
 
@@ -853,7 +890,7 @@ of an element in the tree if there are multiple same-named elements.
 
 =head1 BUGS
 
-None known at this time. Bug reports and design suggestions are always welcome.
+Bug reports and design suggestions are always welcome.
 
 =head1 AUTHOR
 

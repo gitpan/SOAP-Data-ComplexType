@@ -1,3 +1,15 @@
+0.041	19 May 2006
+	Made autoload accessor, get, and set methods SOAP Array type aware, such that they now correctly return appropriate values depending on the caller context: list or scalar.
+	
+	Improved reliability of SOAP::Data::ComplexType::Builder::Element argument parsing.
+	
+	Rewrote SOAP::Data::ComplexType::Builder::Element method add_elem to correct type checking and fix buggy new object construction case.
+	
+	Changed autoload accessor method to return actual object values (i.e. SOAP::Data:ComplexType::Builder::Element objects or scalar data), instead of raw data.
+	(Change actually occured in 0.04.)
+	*NOTE* this breaks backward compatibility with scripts that depended on a raw data structure return result from autoload accessor methods.
+	Also, do not depend on the type or structure of returned objects at this time, as this will be changing soon as internal package structure is optimized (next major release).
+
 0.04	13 May 2006
 	Added get() and set() accessor methods.  Autoload accessor methods changed to implement these methods.  get() will now return a list of values if the caller
 	expects array form.

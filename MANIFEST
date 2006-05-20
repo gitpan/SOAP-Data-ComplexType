@@ -6,6 +6,7 @@ MANIFEST			This list of files
 META.yml
 README
 SIGNATURE
+t/00signature.t
 t/01use.t
 t/02simple.t
 t/03complex.t
