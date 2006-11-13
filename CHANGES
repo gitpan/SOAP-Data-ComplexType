@@ -1,3 +1,6 @@
+0.043	13 November 2006
+	Corrected minor content bug in POD.
+
 0.042	13 November 2006
 	Corrected get and set method return values in array context for some error cases (where class type is unknown): now returns empty list when no values exist, instead of undef.
 	
