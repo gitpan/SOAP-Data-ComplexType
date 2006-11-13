@@ -1,6 +1,6 @@
 package SOAP::Data::ComplexType::Array;
 
-$VERSION = 0.043;
+$VERSION = 0.044;
 
 use strict;
 use warnings;

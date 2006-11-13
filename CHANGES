@@ -1,11 +1,10 @@
-0.043	13 November 2006
-	Corrected minor content bug in POD.
-
-0.042	13 November 2006
+0.044	13 November 2006
 	Corrected get and set method return values in array context for some error cases (where class type is unknown): now returns empty list when no values exist, instead of undef.
 	
 	Added new methods to SOAP::Data::ComplexType: as_soap_data_instance, as_xml_data_instance.
 
+	Corrected minor content bug in POD.
+	
 0.041	19 May 2006
 	Made autoload accessor, get, and set methods SOAP Array type aware, such that they now correctly return appropriate values depending on the caller context: list or scalar.
 	
