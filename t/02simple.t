@@ -1,6 +1,6 @@
 #!/usr/local/bin/perl -w
 
-use Test::More tests => 11;
+use Test::More tests => 16;
 
 package My::SOAP::Data::ComplexType::Foo;
 use strict;
@@ -39,6 +39,13 @@ isa_ok($request_obj, 'SOAP::Data::ComplexType');
 my @data = $request_obj->as_soap_data;
 cmp_ok(scalar @data, '==', 3, 'Check that expected fields are present');
 isa_ok ($_, 'SOAP::Data') foreach @data;
+
+my $dhref = $request_obj->as_soap_data_instance(name => 'myObject');
+isa_ok($dhref, 'SOAP::Data');
+cmp_ok($dhref->name, 'eq', 'myObject', 'Check object instance name');
+cmp_ok($dhref->type, 'eq', &My::SOAP::Data::ComplexType::Foo::OBJ_TYPE, 'Check object instance type');
+cmp_ok($dhref->uri, 'eq', &My::SOAP::Data::ComplexType::Foo::OBJ_URI, 'Check object instance uri');
+cmp_ok(scalar @{[${$dhref->value()}->value()]}, '==', 3, 'Check that expected object instance fields are present');
 cmp_ok($request_obj->field1, 'eq', 'moretext', 'Check autoload accessor method');
 cmp_ok($request_obj->get('field1'), 'eq', 'moretext', 'Check get accessor method');
 

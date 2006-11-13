@@ -1,16 +1,18 @@
 package SOAP::Data::ComplexType;
+our $VERSION = 0.042;
+
 use strict;
 use warnings;
 use Carp ();
 use Scalar::Util;
 
-our $VERSION = 0.041;
 
 use constant OBJ_URI 	=> undef;
 use constant OBJ_TYPE	=> undef;	#format: ns:type
 use constant OBJ_FIELDS => {};		#format: name=>[type, uri, attr]
 
-our $AUTOLOAD;
+use vars qw($AUTOLOAD);
+
 sub new {
 	my $proto = shift;
 	my $class = ref($proto) || $proto;
@@ -198,7 +200,7 @@ sub get {
 	my $class = ref($self) || Carp::confess "'$self' is not an object";
 	my $name = shift;
 	my $elem;
-	return undef unless defined ($elem = $self->get_elem($name));
+	return wantarray ? () : undef unless defined ($elem = $self->get_elem($name));
 	my $res = $elem->value();
 	if ($elem->{type} =~ m/(^|.+:)Array$/o) {
 		return wantarray ? @{$res} : scalar @{$res} if defined $res;
@@ -220,16 +222,16 @@ sub set {
 		if (ref($value) eq 'ARRAY') {
 			foreach (@{$value}) {
 				Carp::cluck "Value ".ref($_)." is not a valid SOAP::Data::ComplexType::Builder::Element object" if ref($_) && UNIVERSAL::isa($_, 'SOAP::Data::ComplexType::Builder::Element');
-				return undef;
+				return wantarray ? () : undef;
 			}
 		} else {
 			Carp::cluck "Value ".ref($_)." is not a valid SOAP::Data::ComplexType::Builder::Element object" unless UNIVERSAL::isa($value, 'SOAP::Data::ComplexType::Builder::Element');
-			return undef;
+			return wantarray ? () : undef;
 		}
 	}
 	
 	my $elem;
-	return undef unless ($elem = $self->get_elem($name));
+	return wantarray ? () : undef unless ($elem = $self->get_elem($name));
 	my $res = $elem->value(ref($value) eq 'ARRAY' ? $value : [$value]);
 	if ($elem->{type} =~ m/(^|.+:)Array$/o) {
 		return wantarray ? @{$res} : scalar @{$res} if defined $res;
@@ -245,8 +247,27 @@ sub as_soap_data {
 	return @_ ? $self->{_sdb_obj}->get_elem($_[0])->get_as_data : $self->{_sdb_obj}->to_soap_data;
 }
 
+sub as_soap_data_instance {
+	my $self = shift;
+	my $class = ref($self);
+	my %args = @_;
+	no strict 'refs';
+	return SOAP::Data->new(
+		exists $args{name} ? (name	=> $args{name}) : (),
+		type	=> exists $args{type} ? $args{type} : &{"$class\::OBJ_TYPE"},
+		uri		=> exists $args{uri} ? $args{uri} : &{"$class\::OBJ_URI"},
+		attr 	=> exists $args{attr} ? $args{attr} : {},
+		value	=> \SOAP::Data->value($self->as_soap_data)
+	);
+}
+
 sub as_xml_data {
 	return shift->{_sdb_obj}->serialise(@_);
+}
+
+sub as_xml_data_instance {
+	my $self = shift;
+	my $serialized = SOAP::Serializer->autotype($self->{_sdb_obj}->autotype)->readable($self->{_sdb_obj}->readable)->serialize( $self->as_soap_data_instance(@_) );
 }
 
 sub as_raw_data {
@@ -340,7 +361,8 @@ use vars qw(@ISA);
 @ISA = qw(SOAP::Data::Builder::Element);
 use Carp ();
 use Scalar::Util;
-our $AUTOLOAD;
+
+use vars qw($AUTOLOAD);
 
 sub new {
 	my ($class,%args) = @_;
@@ -421,7 +443,7 @@ sub get {
 	my $class = ref($self) || Carp::confess "'$self' is not an object";
 	my $name = shift;
 	my $elem;
-	return undef unless defined ($elem = $self->get_elem($name));
+	return wantarray ? () : undef unless defined ($elem = $self->get_elem($name));
 	my $res = $elem->value();
 	if ($elem->{type} =~ m/(^|.+:)Array$/o) {
 		return wantarray ? @{$res} : scalar @{$res} if defined $res;
@@ -443,16 +465,16 @@ sub set {
 		if (ref($value) eq 'ARRAY') {
 			foreach (@{$value}) {
 				Carp::cluck "Value ".ref($_)." is not a valid SOAP::Data::ComplexType::Builder::Element object" if ref($_) && UNIVERSAL::isa($_, 'SOAP::Data::ComplexType::Builder::Element');
-				return undef;
+				return wantarray ? () : undef;
 			}
 		} else {
 			Carp::cluck "Value ".ref($_)." is not a valid SOAP::Data::ComplexType::Builder::Element object" unless UNIVERSAL::isa($value, 'SOAP::Data::ComplexType::Builder::Element');
-			return undef;
+			return wantarray ? () : undef;
 		}
 	}
 	
 	my $elem;
-	return undef unless ($elem = $self->get_elem($name));
+	return wantarray ? () : undef unless ($elem = $self->get_elem($name));
 	my $res = $elem->value(ref($value) eq 'ARRAY' ? $value : [$value]);
 	if ($elem->{type} =~ m/(^|.+:)Array$/o) {
 		return wantarray ? @{$res} : scalar @{$res} if defined $res;
@@ -659,12 +681,24 @@ SOAP::Data::ComplexType - An abstract class for creating and handling complex SO
 	print $request_obj->as_xml_data;
 
 	use SOAP::Lite;
+	
 	my $result = SOAP::Lite
 			->uri($uri)
 			->proxy($proxy)
-			->somemethod(\SOAP::Data->value($request_obj->as_soap_data))
+			->somemethod($request_obj->as_soap_data_instance( name => 'objInstance' ))
 			->result;
-			
+	# An equivalent call...
+	my $result2 = SOAP::Lite
+			->uri($uri)
+			->proxy($proxy)
+			->somemethod(SOAP::Data->new(
+					name => 'objInstance'
+					type => &My::SOAP::Data::ComplexType::Bar::OBJ_TYPE,
+					uri  => &My::SOAP::Data::ComplexType::Bar::OBJ_URI,
+					attr => {}
+				)->value(\SOAP::Data->value($request_obj->as_soap_data()))
+			->result;
+
 	#assuming the method returns an object of type Foo...
 	if (ref($result) eq 'Foo') {
 		my $result_obj = My::SOAP::Data::ComplexType::Foo->new($result);
@@ -837,13 +871,22 @@ for get_elem object method.
 Returns (or sets) the value of the given FIELDNAME field in your object. 
 NEW_VALUE is optional, and changes the current value of the object.
 
+=head2 $obj->as_soap_data_instance( name => INSTANCE_NAME )
+
+Returns a SOAP::Data instance of the object, named INSTANCE_NAME.
+
 =head2 $obj->as_soap_data
 
-Returns all data as a list of SOAP::Data objects.
+Returns all object fields as a list of SOAP::Data objects.  Best for use with SOAP::Lite
+client stubs (subclasses), such as those generated by SOAP::Lite's L<stubmaker.pl|SOAP::Lite>.
+
+=head2 $obj->as_soap_data_instance( name => INSTANCE_NAME )
+
+Returns an instance of the object, named INSTANCE_NAME, formatted as an XML string.
 
 =head2 $obj->as_xml_data
 
-Returns all data formatted as an XML string.
+Returns all object fields as a list, formatted as an XML string.
 
 =head2 $obj->as_raw_data
 
